@@ -177,9 +177,9 @@
 
 ;;;;;
 
-(def color-map [color-off color-red-dim color-red color-amber-dim color-amber color-green-dim color-green])
+(def palette [color-off color-red-dim color-red color-amber-dim color-amber color-green-dim color-green])
 (def code->color
-  (partial nth color-map))
+  (partial nth palette))
 
 (def board
   [[1 0 0 0 0 0 0 1]
@@ -200,6 +200,20 @@
    [0 0 0 0 0 0 0 0]
    [0 0 0 0 0 0 0 0]
    [0 0 0 0 0 0 0 0]])
+
+(def options-board
+  [[2 2 2 0 0 0 0 0]
+   [2 0 2 0 0 0 0 0]
+   [2 0 2 0 0 0 0 0]
+   [2 2 2 0 0 0 0 0]
+   [0 0 0 0 0 0 0 0]
+   [0 0 0 0 0 0 0 0]
+   [0 0 0 0 0 0 0 0]
+   (as-> (range) $
+     (take (count palette) $)
+     (concat $ (repeat 0))
+     (take 8 $)
+     (vec $))])
 
 ;; TODO: it's possible to set entire rows at once, or even all LEDs!
 (defn draw-board [board]
@@ -244,7 +258,7 @@
                 (fn [v]
                   (vec (map (fn [el]
                               (if (< (rand) prob)
-                                (dec (count color-map))
+                                (dec (count palette))
                                 el))
                             v))))))
 
@@ -307,32 +321,35 @@
 ;;; Scenes
 
 (def modes
-  ;; Tap on any cell to change the color?
-  {:paint   {:init     #(assoc % :color color-red)
+  {:paint   {:enter    (fn [{:keys [color] :as state}]
+                         (cond-> state
+                           (nil? color)
+                           (assoc :color 2)))
              :on-tap   (fn [{:keys [color] :as state} x y]
                          (update-in state [:board y x]
                                     #(if (pos? %)
                                        0
-                                       2)))
-             :on-reset (fn [state]
-                         (assoc state :board new-board))}
-   ;; Don't really need `tick` here, this is just an experiment
-   :gravity {:init     (fn [state]
-                         (assoc state :tick 0))
-             :on-reset (fn [state]
-                         state)
-             :on-tap   (fn [{:keys [color] :as state} x y]
-                         (update-in state [:board y x]
-                                    #(if (pos? %)
-                                       0
-                                       2)))
-             :on-tick  (fn [state]
-                         ;;(update state :tick inc)
-                         (update state :board gravity-step))}
+                                       color)))
+             :on-reset (fn [{:keys [board old-board] :as state}]
+                         (if (= board new-board) ; undo
+                           (assoc state
+                                  :board old-board)
+                           (assoc state          ; clear
+                                  :old-board board
+                                  :board new-board)))}
+   :gravity {:enter   (fn [state]
+                        (assoc state :tick 0))
+             :on-tap  (fn [{:keys [color] :as state} x y]
+                        (update-in state [:board y x]
+                                   #(if (pos? %)
+                                      0
+                                      color)))
+             :on-tick (fn [state]
+                        (update state :board gravity-step))}
    :rain    {:on-tick (let [step (comp gravity-step fade-step rain-step)]
                         (fn [state]
                           (update state :board step)))}
-   :eq      {:init    #(assoc % :tick-ms 600)
+   :eq      {:enter   #(assoc % :tick-ms 600)
              :on-tick (fn [{:keys [peaks] :as state}]
                         (let [levels (->> (fn low-bias-rand []
                                             (let [x (rand-int 5)]
@@ -371,18 +388,38 @@
                                  :eq-levels levels
                                  :board     board
                                  :peaks     peaks)))}
-   :exit    {:init (fn [{:keys [exit?] :as state}]
-                     (deliver exit? true)
-                     state)}})
+   :options {:enter   (fn [state]
+                        (assoc state
+                               :restore (select-keys state [:board :tick-ms])
+                               :board options-board
+                               :tick 0
+                               :tick-ms 500))
+             :leave   (fn [{:keys [restore] :as state}]
+                        (-> state
+                            (merge restore)
+                            (dissoc :restore)))
+             :on-tap  (fn [{:keys [board] :as state} x y]
+                        (when (= 7 y)
+                          (assoc state :color (get-in board [y x]))))
+             :on-tick (fn [{:keys [color tick] :as state}]
+                        (-> state
+                            (update :tick inc)
+                            (assoc :board
+                                   (cond-> options-board
+                                     (odd? tick)
+                                     (assoc-in [7 color] 0)))))}
+   :exit    {:enter (fn [{:keys [exit?] :as state}]
+                      (deliver exit? true)
+                      state)}})
 
 (def mode-buttons
   [:paint
-   :gravity          ; could be an option! could have an options mode!
+   :gravity
    :rain
    :eq
    nil
    nil
-   nil
+   :options
    :exit])
 
 (defn initial-state []
@@ -390,6 +427,10 @@
    :tick-ms 200})
 
 ;;
+
+;; Tetris option?
+
+;; TODO: highlight selected mode (and rename them "scenes"!)
 
 ;; TODO: we should probably pass `out` also.
 ;; TODO: could support down and up for taps
@@ -399,8 +440,16 @@
 ;; neat.  Could also track the tick they went down and use that for
 ;; long presses.
 
-;; TODO: could allow modes to run code when they're being exited, like
-;; saving the buffer.
+;; TODO: "screenshot", kind of like a register.
+
+;; TODO: could do a repeat thing with `:init` where it loads some
+;; built-in "images".
+
+;; TODO: debug should be an option
+
+;; TODO: what about "colors" that rotate??
+
+;; TODO: game of life
 
 (defn handle-msg [state-atom {:keys [command note] :as msg}]
   (prn (dissoc msg :msg :device))       ; DEBUG: messages
@@ -410,17 +459,21 @@
       (#{8 24 40 56 72 88 104 120} note)
       (when-let [new-mode (let [idx (int (/ (- note 8) 16))]
                             (nth mode-buttons idx))]
-        (let [{:keys [init on-reset]} (get modes new-mode)
-              {:keys [mode]}          @state-atom]
+        (let [{:keys [enter on-reset]} (get modes new-mode)
+              {:keys [mode]}           @state-atom
+              {:keys [leave]}          (get modes mode)]
           ;; TODO: Light up mode buttons
           (swap! state-atom
                  (fn select-mode [s]
                    (cond-> s
+                     (and leave (not= new-mode mode))
+                     leave
+
                      true
                      (assoc :mode new-mode)
 
-                     (and init (not= new-mode mode))
-                     init
+                     (and enter (not= new-mode mode))
+                     enter
 
                      (and on-reset (= new-mode mode))
                      on-reset)))))
@@ -443,12 +496,12 @@
 (defn run [in]
   (let [mode  (first mode-buttons)
         exit? (promise)
-        init  (or (get-in modes [mode :init])
+        enter (or (get-in modes [mode :enter])
                   identity)
         state (-> (initial-state)
                   (assoc :mode mode
                          :exit? exit?)
-                  init
+                  enter
                   atom)
         _     (add-watch state :draw
                          (fn [_k _r old new]
