@@ -1,0 +1,2 @@
+{:deps {overtone/midi-clj                    {:mvn/version "0.5.0"}
+        uk.co.xfactory-librarians/coremidi4j {:mvn/version "1.6"}}}
