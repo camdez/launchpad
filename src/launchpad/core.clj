@@ -1,4 +1,5 @@
 (ns launchpad.core
+  {:clj-kondo/config '{:lint-as {launchpad.core/forv clojure.core/for}}}
   (:require
    [overtone.midi
     :as
@@ -104,6 +105,13 @@
     (Thread/sleep 1000)
     (.close synth)
     ))
+
+(defmacro forv
+  {:style/indent 1}
+  [bindings body]
+  `(vec
+    (for ~bindings
+      ~body)))
 
 (defn initialize []
   ;; TODO make these look dynamically bound. Or pass as args.
@@ -222,7 +230,7 @@
       (dotimes [col-idx (count row)]
         (led-on col-idx row-idx (code->color (nth row col-idx)))))))
 
-(letfn [(on-map? [x y]
+(letfn [(on-board? [x y]
           (and (< -1 x 8)
                (< -1 y 8)))
         (neighbor-count [old-board x y]
@@ -231,19 +239,19 @@
                      :when (not= 0 x-off y-off)]
                  [(+ x x-off) (+ y y-off)])
                (filter (fn [[x' y']]
-                         (and (on-map? x' y')
+                         (and (on-board? x' y')
                               (pos? (get-in old-board [y' x'])))))
                count))]
   (defn life-step [board]
-    (vec
-     (for [y (range 8)]
-       (vec
-        (for [x (range 8)]
-          (let [v (get-in board [y x])]
-            (cond
-              (and (pos? v)  (<= 2 (neighbor-count board x y) 3)) v
-              (and (zero? v) (=  3 (neighbor-count board x y)))   (rand-nth [2 4 6])
-              :else                                               0))))))))
+    (forv [y (range 8)]
+      (forv [x (range 8)]
+        (let [live? (pos? (get-in board [y x]))
+              n-cnt (neighbor-count board x y)]
+          (cond
+            (and live? (= 2 n-cnt))        4
+            (and live? (= 3 n-cnt))        2
+            (and (not live?) (=  3 n-cnt)) 6
+            :else                          0))))))
 
 (defn gravity-step [board]
   (loop [b board
@@ -340,43 +348,29 @@
        [0 0 0 0 0 0 0 0]]
    })
 
+(defn- paint [{:keys [color] :as state} x y]
+  (update-in state [:board y x]
+             #(if (pos? %)
+                0
+                color)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Scenes
 
 (def modes
-  {:paint   {:enter    (fn [{:keys [color] :as state}]
-                         (cond-> state
-                           (nil? color)
-                           (assoc :color 2)))
-             :on-tap   (fn [{:keys [color] :as state} x y]
-                         (update-in state [:board y x]
-                                    #(if (pos? %)
-                                       0
-                                       color)))
+  {:paint   {:on-tap   paint
              :on-reset (fn [{:keys [board old-board] :as state}]
                          (if (and old-board (= board new-board)) ; undo
                            (assoc state
                                   :board old-board)
-                           (assoc state          ; clear
+                           (assoc state ; clear
                                   :old-board board
                                   :board new-board)))}
-   :gravity {:enter   (fn [state]
-                        (assoc state :tick 0))
-             :on-tap  (fn [{:keys [color] :as state} x y]
-                        (update-in state [:board y x]
-                                   #(if (pos? %)
-                                      0
-                                      color)))
-             :on-tick (fn [state]
-                        (update state :board gravity-step))}
+   :gravity {:on-tap  paint
+             :on-tick #(update % :board gravity-step)}
    :rain    {:on-tick (let [step (comp gravity-step fade-step rain-step)]
-                        (fn [state]
-                          (update state :board step)))}
-   :life    {:on-tap  (fn [{:keys [color] :as state} x y]
-                        (update-in state [:board y x]
-                                   #(if (pos? %)
-                                      0
-                                      color)))
+                        #(update % :board step))}
+   :life    {:on-tap  paint
              :on-tick #(update % :board life-step)}
    :eq      {:enter   #(assoc % :tick-ms 600)
              :on-tick (fn [{:keys [peaks] :as state}]
@@ -428,7 +422,7 @@
                             (merge restore)
                             (dissoc :restore)))
              :on-tap  (fn [{:keys [board] :as state} x y]
-                        (when (= 7 y)
+                        (when (= 7 y) ; color picker row
                           (assoc state :color (get-in board [y x]))))
              :on-tick (fn [{:keys [color tick] :as state}]
                         (-> state
@@ -453,11 +447,12 @@
 
 (defn initial-state []
   {:board   new-board
+   :color   2
    :tick-ms 200})
 
 ;;
 
-;; Tetris option?
+;; Tetris option?  This should be the `on-reset` on gravity mode!
 
 ;; TODO: highlight selected mode (and rename them "scenes"!)
 
@@ -478,7 +473,8 @@
 
 ;; TODO: what about "colors" that rotate??
 
-;; TODO: game of life
+;; All handlers should be allowed to return not maps which are
+;; ignored.
 
 (defn handle-msg [state-atom {:keys [command note] :as msg}]
   (prn (dissoc msg :msg :device))       ; DEBUG: messages
