@@ -222,6 +222,29 @@
       (dotimes [col-idx (count row)]
         (led-on col-idx row-idx (code->color (nth row col-idx)))))))
 
+(letfn [(on-map? [x y]
+          (and (< -1 x 8)
+               (< -1 y 8)))
+        (neighbor-count [old-board x y]
+          (->> (for [x-off [-1 0 1]
+                     y-off [-1 0 1]
+                     :when (not= 0 x-off y-off)]
+                 [(+ x x-off) (+ y y-off)])
+               (filter (fn [[x' y']]
+                         (and (on-map? x' y')
+                              (pos? (get-in old-board [y' x'])))))
+               count))]
+  (defn life-step [board]
+    (vec
+     (for [y (range 8)]
+       (vec
+        (for [x (range 8)]
+          (let [v (get-in board [y x])]
+            (cond
+              (and (pos? v)  (<= 2 (neighbor-count board x y) 3)) v
+              (and (zero? v) (=  3 (neighbor-count board x y)))   (rand-nth [2 4 6])
+              :else                                               0))))))))
+
 (defn gravity-step [board]
   (loop [b board
          x 0
@@ -255,12 +278,12 @@
   ([board] (rain-step board (/ 1 10)))
   ([board prob]
      (update-in board [0]
-                (fn [v]
-                  (vec (map (fn [el]
-                              (if (< (rand) prob)
-                                (dec (count palette))
-                                el))
-                            v))))))
+                (fn [row]
+                  (mapv (fn [el]
+                          (if (< (rand) prob)
+                            (dec (count palette))
+                            el))
+                        row)))))
 
 ;;;
 
@@ -331,7 +354,7 @@
                                        0
                                        color)))
              :on-reset (fn [{:keys [board old-board] :as state}]
-                         (if (= board new-board) ; undo
+                         (if (and old-board (= board new-board)) ; undo
                            (assoc state
                                   :board old-board)
                            (assoc state          ; clear
@@ -349,6 +372,12 @@
    :rain    {:on-tick (let [step (comp gravity-step fade-step rain-step)]
                         (fn [state]
                           (update state :board step)))}
+   :life    {:on-tap  (fn [{:keys [color] :as state} x y]
+                        (update-in state [:board y x]
+                                   #(if (pos? %)
+                                      0
+                                      color)))
+             :on-tick #(update % :board life-step)}
    :eq      {:enter   #(assoc % :tick-ms 600)
              :on-tick (fn [{:keys [peaks] :as state}]
                         (let [levels (->> (fn low-bias-rand []
@@ -417,7 +446,7 @@
    :gravity
    :rain
    :eq
-   nil
+   :life
    nil
    :options
    :exit])
