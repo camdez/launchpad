@@ -2,6 +2,10 @@
   {:clj-kondo/config '{:lint-as {launchpad.machine.modes/forv clojure.core/for}}}
   (:require [launchpad.machine.board :as b]))
 
+;; TODO: pass this in.
+(def device-name "IAC Driver")
+(def iac-out (overtone.midi/midi-out device-name))
+
 (defmacro forv
   {:style/indent 1}
   [bindings body]
@@ -12,7 +16,7 @@
 (defn- paint [{:keys [color] :as state} x y]
   (update-in state [:board y x]
              #(if (pos? %)
-                0
+                (b/color :off)
                 color)))
 
 (defn- lift-bstep
@@ -26,6 +30,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Step Functions
 
+(defn- play-bottom-step [{:keys [board play-bottom] :as state}]
+  (when play-bottom
+    (doseq [[idx color] (map-indexed vector (last board))]
+      (when-not (b/off? color)
+        (overtone.midi/midi-note iac-out (+ idx 36) 80 500))))
+  state)
+
 (defn- fade-bstep
   ([board]
    (fade-bstep board 2))
@@ -36,7 +47,7 @@
                     (zero? (rand-int chance)) (dec el)
                     :else                     el))
                 %)
-        board)))
+         board)))
 
 (defn- gravity-bstep [board]
   (loop [b board
@@ -125,6 +136,41 @@
            :board     board
            :peaks     peaks)))
 
+
+(defn- synth-tap [{:keys [tick] :as state} x y]
+  (-> state
+      (assoc-in [:freqs x]
+                (if (= (dec b/board-height) y)
+                  nil
+                  (- (dec b/board-height) y)))
+      (assoc-in [:set-ticks x] tick)))
+
+(defn- synth-pos
+  "Given a note frequency (`freq`) set on a certain tick, `set-tick`,
+  where in the column should we light up on tick `tick`?"
+  [freq set-tick tick]
+  (- freq (let [v (mod (- tick set-tick)
+                       (* 2 freq))]
+            (if (> v freq)
+              (- freq (- v freq))
+              v))))
+
+(defn- synth-tick [{:keys [color freqs set-ticks tick] :as state}]
+  (-> state
+      (update :tick inc)
+      (assoc :board b/empty-board)
+      (update :board (fn [b]
+                       (reduce (fn [b idx]
+                                 (if-let [freq (nth freqs idx)]
+                                   (assoc-in b
+                                             [(- (dec b/board-height)
+                                                 (synth-pos freq (nth set-ticks idx) tick))
+                                              idx]
+                                             color)
+                                   b))
+                               b
+                               (range b/board-width))))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Top-Level
 
@@ -141,13 +187,24 @@
    :gravity {:on-tap  paint
              :on-tick (lift-bstep gravity-bstep)}
 
-   :rain    {:on-tick (lift-bstep (comp rain-bstep gravity-bstep fade-bstep))}
+   :rain    {:on-tick (comp play-bottom-step (lift-bstep (comp rain-bstep gravity-bstep fade-bstep)))}
 
    :life    {:on-tap  paint
-             :on-tick (lift-bstep life-bstep)}
+             :on-tick (comp play-bottom-step (lift-bstep life-bstep))}
 
-   :eq      {:on-enter #(assoc % :tick-ms 600)
-             :on-tick  eq-step}
+   :eq      {:on-tick eq-step}
+
+   :synth   {:on-enter #(assoc %
+                               :freqs     (vec (repeat b/board-width nil))
+                               :set-ticks (vec (repeat b/board-width nil))
+                               :tick      0)
+             :on-tap   synth-tap
+             :on-tick  (comp play-bottom-step synth-tick)
+             :on-self  (fn [state]
+                         (update state :tick-ms #(case %
+                                                   500  250
+                                                   250  125
+                                                   500)))}
 
    :options {:on-enter (fn [state]
                          (assoc state
@@ -160,15 +217,28 @@
                              (merge restore)
                              (dissoc :restore)))
              :on-tap   (fn [{:keys [board] :as state} x y]
-                         (when (= 7 y)  ; color picker row
-                           (assoc state :color (get-in board [y x]))))
-             :on-tick  (fn [{:keys [color tick] :as state}]
+                         (cond
+                           (= 7 y)  ; color picker row
+                           (assoc state :color (get-in board [y x]))
+
+                           (= [1 1] [x y])
+                           (update state :debug not)
+
+                           (= [1 2] [x y])
+                           (update state :play-bottom not)))
+             :on-tick  (fn [{:keys [color debug play-bottom tick] :as state}]
                          (-> state
                              (update :tick inc)
                              (assoc :board
                                     (cond-> b/options-board
                                       (odd? tick)
-                                      (assoc-in [7 color] 0)))))}
+                                      (assoc-in [7 color] 0)
+
+                                      debug
+                                      (assoc-in [1 1] (b/color :green))
+
+                                      play-bottom
+                                      (assoc-in [2 1] (b/color :green))))))}
 
    :exit    {:on-enter (fn [{:keys [exit?] :as state}]
                          (deliver exit? true)
@@ -180,6 +250,6 @@
    :rain
    :eq
    :life
-   nil
+   :synth
    :options
    :exit])

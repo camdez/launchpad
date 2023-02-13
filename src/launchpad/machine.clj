@@ -15,7 +15,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- handle-msg [state-atom {:keys [command note] :as msg}]
-  (prn (dissoc msg :msg :device))       ; DEBUG: messages
+  (when (:debug @state-atom)
+    (prn (dissoc msg :msg :device)))
   (when (= :note-off command)
     (cond
       ;; Mode buttons
@@ -62,7 +63,8 @@
         _     (add-watch state :redraw
                          (fn [_k _r old new]
                            (when (not= (dissoc old :tick) (dissoc new :tick))
-                             (prn new) ; DEBUG: state
+                             (when (:debug new)
+                               (prn new))
                              (when (not= (:board old) (:board new))
                                ;; TODO: Optimize this to only send what changed
                                (draw-board! lp-out (:board new))))))
