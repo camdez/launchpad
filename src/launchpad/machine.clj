@@ -12,6 +12,13 @@
       (dotimes [col-idx (count row)]
         (lp/led-on! midi-out col-idx row-idx (b/code->lp-color (nth row col-idx)))))))
 
+(defn- draw-mode-buttons! [midi-out mode modes]
+  (doseq [[pos-mode note] (map vector modes [8 24 40 56 72 88 104 120])]
+    (midi/midi-note-on midi-out note
+                       (if (= mode pos-mode)
+                         (b/color :red)
+                         (b/color :off)))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- handle-msg [state-atom {:keys [command note] :as msg}]
@@ -28,7 +35,6 @@
               {:keys [mode]}             @state-atom
               {:keys [on-leave]}         (get modes/modes mode)
               mode-changed?              (not= new-mode mode)]
-          ;; TODO: Light up mode buttons
           (swap! state-atom
                  (fn select-mode [s]
                    (cond-> s
@@ -59,32 +65,33 @@
 
 (defn run [lp-in lp-out]
   (let [exit? (promise)
-        state (atom nil)
-        _     (add-watch state :redraw
-                         (fn [_k _r old new]
-                           (when (not= (dissoc old :tick) (dissoc new :tick))
-                             (when (:debug new)
-                               (prn new))
-                             (when (not= (:board old) (:board new))
-                               ;; TODO: Optimize this to only send what changed
-                               (draw-board! lp-out (:board new))))))
-        _     (reset! state
-                      {:board   b/init-board
-                       :color   2
-                       :exit?   exit?
-                       :mode    (first modes/mode-buttons)
-                       :tick-ms 200})
-        tickf (future
-                (try ; TODO: if apply handlers checked for exceptions, this could be a lot cleaner!
-                  (loop []
-                    (let [{:keys [mode tick-ms]} @state]
-                      (when-let [on-tick (get-in modes/modes [mode :on-tick])]
-                        (swap! state on-tick))
-                      (Thread/sleep (or tick-ms 1000))
-                      (when-not (realized? exit?)
-                        (recur))))
-                  (catch Exception ex
-                    (prn ex))))]
+        state (atom nil)]
+    (add-watch state :redraw
+               (fn [_k _r old new]
+                 (when (not= (dissoc old :tick) (dissoc new :tick))
+                   (when (:debug new)
+                     (prn new))
+                   (when (not= (:board old) (:board new))
+                     (draw-board! lp-out (:board new)))
+                   (when (not= (:mode old) (:mode new))
+                     (draw-mode-buttons! lp-out (:mode new) modes/mode-buttons)))))
+    (reset! state
+            {:board   b/init-board
+             :color   2
+             :exit?   exit?
+             :mode    (first modes/mode-buttons)
+             :tick-ms 200})
+    (future
+      (try
+        (loop []
+          (let [{:keys [mode tick-ms]} @state]
+            (when-let [on-tick (get-in modes/modes [mode :on-tick])]
+              (swap! state on-tick))
+            (Thread/sleep (or tick-ms 1000))
+            (when-not (realized? exit?)
+              (recur))))
+        (catch Exception ex
+          (prn ex))))
     (try
       (midi/midi-handle-events lp-in (partial handle-msg state))
       @exit?                            ; wait for exit signal
@@ -92,5 +99,4 @@
       (finally
         (.setReceiver (:transmitter lp-in) nil)
         (println "Goodbye!")))
-    @tickf                              ; check for exceptions
     @state))
