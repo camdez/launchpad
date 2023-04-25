@@ -9,6 +9,7 @@
 (def lp-out (midi/midi-out lp/device-name))
 
 (comment
+  ;; Launchpad mode 7 ("user mode 2")
   (def f (future (machine/run lp-in lp-out)))
 
   (midi/midi-devices) ; all devices

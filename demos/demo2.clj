@@ -60,12 +60,24 @@
                  note)))))
 
 (comment
+  ;; Pitched instruments
   (midi/midi-note iac-out 60 80 500)
 
   (let [notes (->> (range)
-                 (drop 60)
-                 (take (inc 24))
-                 (scale-notes major-scale))
-      vels  (repeat 80)
-      durs  (repeat 300)]
-  (midi/midi-play iac-out notes vels durs)))
+                   (drop 60)
+                   (take (inc 24))
+                   (scale-notes minor-scale))
+        vels  (repeat 80)
+        durs  (repeat 300)]
+    (midi/midi-play iac-out notes vels durs))
+
+  ;; Drum pad
+  (midi/midi-note iac-out 36 80 500)
+
+  (let [notes (->> (range)
+                   (drop 36)
+                   (take 16))
+        vels  (repeat 80)
+        durs  (repeat 300)]
+    (midi/midi-play iac-out notes vels durs))
+  )

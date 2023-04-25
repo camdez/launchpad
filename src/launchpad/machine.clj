@@ -5,7 +5,6 @@
    [launchpad.machine.modes :as modes]
    [overtone.midi :as midi]))
 
-;; TODO: it's possible to set entire rows at once, or even all LEDs!
 (defn- draw-board! [midi-out board]
   (dotimes [row-idx (count board)]
     (let [row (nth board row-idx)]
